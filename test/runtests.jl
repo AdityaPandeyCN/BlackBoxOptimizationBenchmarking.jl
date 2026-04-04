@@ -1,22 +1,31 @@
 using Test
 using BlackBoxOptimizationBenchmarking, Plots, Optimization
-import BlackBoxOptimizationBenchmarking.Chain
+import BlackBoxOptimizationBenchmarking: Chain, BenchmarkSetup, bbob_suite
 const BBOB = BlackBoxOptimizationBenchmarking
 
 using OptimizationBBO, OptimizationOptimJL
 
 ##
 
-map(BBOB.test_x_opt, BBOB.list_functions())
+# Create test suite for dimension 3
+const D = 3
+test_functions = bbob_suite(Val(D))
 
-test_functions = BBOB.list_functions()
+# Test that functions evaluate correctly at optimum
+@testset "Function optima" begin
+    for f in test_functions
+        @test f(f.x_opt) ≈ f.f_opt atol=1e-5
+    end
+end
+
+##
 
 b = BBOB.benchmark(
-    NelderMead(), BBOB.sphere, [100, 500, 1000], 
+    NelderMead(), test_functions[1], [100, 500, 1000],
 )
 
 b = BBOB.benchmark(
-    BenchmarkSetup(NelderMead(); isboxed=false), BBOB.sphere, [100, 500, 1000], 
+    BenchmarkSetup(NelderMead(); isboxed=false), test_functions[1], [100, 500, 1000],
 )
 
 @test length(b.success_count) == 3
@@ -35,10 +44,6 @@ plot!(b2; label = "ParticleSwarm")
 
 ## OptimizationBBO
 
-D = 2
-
-#method = Chain(BBO_adaptive_de_rand_1_bin(), NelderMead(), 0.9)
-
 setup = Chain(
     BenchmarkSetup(BBO_adaptive_de_rand_1_bin(), isboxed = true),
     BenchmarkSetup(NelderMead(), isboxed = false),
@@ -50,11 +55,3 @@ b = BBOB.benchmark(
 )
 
 plot(b)
-
-##
-
-plot(test_functions[1])
-
-
-
-##
