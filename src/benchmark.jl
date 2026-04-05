@@ -193,7 +193,7 @@ function benchmark(
         runtime = reduce_res(res, :runtime, sum),
         Neffective = Neff,
         callcount = reduce_res(res, :callcount),
-        success_rate_per_function = [r.success_rate[end] for r in res]
+        success_rate_per_function = [res.success_rate[end] for res in res]
     )
 end
 
