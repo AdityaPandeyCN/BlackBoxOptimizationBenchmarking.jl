@@ -1,13 +1,13 @@
 using Test
 using BlackBoxOptimizationBenchmarking, Plots, Optimization
-import BlackBoxOptimizationBenchmarking: Chain, BenchmarkSetup, bbob_suite
+import BlackBoxOptimizationBenchmarking.Chain
 const BBOB = BlackBoxOptimizationBenchmarking
 
 using OptimizationBBO, OptimizationOptimJL
 
 ##
 
-test_functions = bbob_suite(Val(3))
+test_functions = BBOB.bbob_suite(Val(3))
 
 @testset "Function optima" begin
     for f in test_functions
@@ -42,6 +42,7 @@ plot!(b2; label = "ParticleSwarm")
 D = 2
 
 #method = Chain(BBO_adaptive_de_rand_1_bin(), NelderMead(), 0.9)
+
 setup = Chain(
     BenchmarkSetup(BBO_adaptive_de_rand_1_bin(), isboxed = true),
     BenchmarkSetup(NelderMead(), isboxed = false),
@@ -56,7 +57,7 @@ plot(b)
 
 ##
 
-plot_functions = bbob_suite(Val(2))
+plot_functions = BBOB.bbob_suite(Val(2))
 plot(plot_functions[1])
 
 ##
