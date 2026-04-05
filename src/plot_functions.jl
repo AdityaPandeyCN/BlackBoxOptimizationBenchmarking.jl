@@ -1,13 +1,14 @@
-@recipe function plot_bbob(func::BBOBFunction{F, 2, M}; nlevels = 15, zoom = 1) where {F, M}
+
+@recipe function f(f::BBOBFunction; nlevels = 15, zoom=1)
 
     markersize := 3
     titlefontsize := 10
 
-    mx = 5.0f0
+    mx = 5.0
     
     if zoom > 1
-        x = LinRange(func.x_opt[1] - 5f0/zoom, func.x_opt[1] + 5f0/zoom, 1000)
-        y = LinRange(func.x_opt[2] - 5f0/zoom, func.x_opt[2] + 5f0/zoom, 1000)
+        x = LinRange(f.x_opt[1]-5/zoom, f.x_opt[1]+5/zoom, 1000)
+        y = LinRange(f.x_opt[2]-5/zoom, f.x_opt[2]+5/zoom, 1000)
     else
         x = LinRange(-mx, mx, 1000)
         y = LinRange(-mx, mx, 1000)
@@ -15,8 +16,8 @@
     xlim = (minimum(x), maximum(x))
     ylim = (minimum(y), maximum(y))
 
-    z = [func(SVector(xi, yi)) - func.f_opt for yi in y, xi in x]
-    levels = 10 .^ (LinRange(-6, log10(maximum(z)), nlevels))
+    z = [f([x,y]) - f.f_opt for y in y, x in x]
+    levels = 10 .^(LinRange(-6, log10(maximum(z)), nlevels))
 
     @series begin
         seriestype := :heatmap
@@ -26,7 +27,7 @@
         cmap := :coolwarm
         alpha := 0.25
         aspectratio := 1
-        title := func.name
+        title := f.name
     
         x, y, z
     end
@@ -39,14 +40,14 @@
 
     @series begin
         seriestype := :scatter
-        x = [func.x_opt[1]]
-        y = [func.x_opt[2]]
+        x = [f.x_opt[1]]
+        y = [f.x_opt[2]]
         c := "red"
         label := false
         xlim := xlim
         ylim := ylim
 
-        x, y
+        x,y
     end
 
 end
