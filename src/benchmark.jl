@@ -41,7 +41,6 @@ function compute_CI(success_rate::Vector{Float64}, Neffective, CI_quantile::Real
 end
 
 pinit(D) = 10*rand(D).-5
-pinit_static(::Val{D}) where D = SVector{D, Float32}(10 * rand(Float32, D) .- 5)
 
 mutable struct BenchmarkSetup{T}
     method::T
@@ -52,6 +51,8 @@ BenchmarkSetup(method::T; isboxed=false) where T = BenchmarkSetup{T}(method, isb
 show(io::IO, b::BenchmarkSetup{T}) where {T} =  begin
     println(io, nameof(T))
 end
+
+# FunctionCallsCounter : keep count of how many time our function is called
 
 mutable struct FunctionCallsCounter{F}
     f::F
@@ -87,6 +88,7 @@ function solve_problem(m::Chain, f, D::Int, run_length::Int)
 end
 
 function solve_problem(optimizer::BenchmarkSetup, f, D::Int, run_length::Int; u0 = pinit(D))
+
     method = optimizer.method
 
     optf = OptimizationFunction((u,_)->f(u), AutoForwardDiff())
@@ -106,29 +108,29 @@ function benchmark(
 
     verbose && @info("$(string(optimizer))\t $f")
 
-    t_alloc = (T) -> zeros(T, Ntrials, length(run_length))
+    t = (T) -> zeros(T, Ntrials, length(run_length))
         
-    reached_minium = t_alloc(Bool)
-    distance_to_xopt = t_alloc(Float64)
-    fmin = t_alloc(Float64)
-    callcount = t_alloc(Int)
-
-    f_opt = f.f_opt
-    x_opt = f.x_opt
+    reached_minium = t(Bool)
+    distance_to_xopt = t(Float64)
+    fmin = t(Float64)
+    callcount = t(Int)
     
-    elapsed = 0.0
+    t = 0.0
     for j in 1:length(run_length)
         for i in 1:Ntrials
             try
-                fcounter = FunctionCallsCounter(f)
-                elapsed += @elapsed sol = solve_problem(optimizer, fcounter, N, run_length[j])
+                fcountner = FunctionCallsCounter(f)
+                t += @elapsed sol = solve_problem(optimizer, fcountner, N, run_length[j])
                 
-                reached_minium[i,j] = sol.objective < Δf + f_opt
-                fmin[i,j] = sol.objective - f_opt 
-                distance_to_xopt[i,j] = √sum(abs2.(sol.u - x_opt))
-                callcount[i,j] = fcounter.count
+                sol.objective, sol.u
+                reached_minium[i,j] = sol.objective < Δf + f.f_opt
+                fmin[i,j] = sol.objective - f.f_opt 
+                distance_to_xopt[i,j] =  √sum(abs2.(sol.u - f.x_opt))
+                callcount[i,j] = fcountner.count
 
             catch err
+                
+                #throw(err)
                 reached_minium[i,j] = false
                 fmin[i,j] = NaN
                 distance_to_xopt[i,j] = NaN
@@ -137,7 +139,7 @@ function benchmark(
             end
         end
     end
-    elapsed /= Ntrials*length(run_length)
+    t /= Ntrials*length(run_length)
     
     dr = x->dropdims(x, dims=1)
     success_rate = sum(reached_minium, dims=1)/Ntrials |> dr
@@ -152,7 +154,7 @@ function benchmark(
         success_rate_qhigh = success_rate_qhigh,
         distance_to_minimizer = mean(distance_to_xopt, dims=1) |> dr, 
         minimum = mean(fmin, dims=1) |> dr, 
-        runtime = elapsed,
+        runtime = t,
         Neffective = Ntrials,
         callcount = mean(callcount, dims=1) |> dr,
         success_rate_per_function = [success_rate[end]]
