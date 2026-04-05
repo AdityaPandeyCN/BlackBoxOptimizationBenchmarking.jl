@@ -15,7 +15,7 @@ mutable struct BenchmarkResults
 end
 BenchmarkResults(; kwargs...) = BenchmarkResults(values(kwargs)...)
 
-show(io::IO, b::BenchmarkResults) = begin
+show(io::IO, b::BenchmarkResults) =  begin
     println(io, "BenchmarkResults :")
     print(io, "Run length : ")
     show(IOContext(io, :limit => true, :compact => true), b.run_length)
@@ -23,7 +23,8 @@ show(io::IO, b::BenchmarkResults) = begin
     show(IOContext(io, :limit => true, :compact => true), b.success_rate)
 end
 
-compute_CI(rate::Real, N::Int, q::Real) = quantile(Beta(0.1 + round(Int, N * rate), 0.1 + N - round(Int, N * rate)), q)
+# https://en.wikipedia.org/wiki/Binomial_proportion_confidence_interval#Clopper%E2%80%93Pearson_interval
+compute_CI(rate::Real, N::Int, q::Real) = quantile(Beta(0.1 + round(Int, N*rate), 0.1 + N - round(Int, N*rate)), q)
 
 function compute_CI!(b::BenchmarkResults, CI_quantile)
     qs = compute_CI(b.success_rate, b.Neffective, CI_quantile)
@@ -34,25 +35,24 @@ end
 
 function compute_CI(success_rate::Vector{Float64}, Neffective, CI_quantile::Real)
     (;
-        success_rate_qlow = compute_CI.(success_rate, Neffective, CI_quantile),
-        success_rate_qhigh = compute_CI.(success_rate, Neffective, 1 - CI_quantile)
+    success_rate_qlow = compute_CI.(success_rate, Neffective, CI_quantile),
+    success_rate_qhigh = compute_CI.(success_rate, Neffective, 1-CI_quantile)
     )
 end
 
-pinit(D) = 10 * rand(D) .- 5
+pinit(D) = 10*rand(D).-5
 pinit_static(::Val{D}) where D = SVector{D, Float32}(10 * rand(Float32, D) .- 5)
 
 mutable struct BenchmarkSetup{T}
     method::T
     isboxed::Bool
 end
-BenchmarkSetup(method::T; isboxed = false) where {T} = BenchmarkSetup{T}(method, isboxed)
+BenchmarkSetup(method::T; isboxed=false) where T = BenchmarkSetup{T}(method, isboxed)
 
-show(io::IO, b::BenchmarkSetup{T}) where {T} = begin
+show(io::IO, b::BenchmarkSetup{T}) where {T} =  begin
     println(io, nameof(T))
 end
 
-# FunctionCallsCounter: keep count of how many times our function is called
 mutable struct FunctionCallsCounter{F}
     f::F
     @atomic count::Int
@@ -71,27 +71,27 @@ mutable struct Chain{T, K}
     p::Float64
 end
 
-show(io::IO, b::Chain{T, K}) where {T, K} = begin
+show(io::IO, b::Chain{T, K}) where {T,K} =  begin
     T1 = nameof(typeof(b.first.method))
     T2 = nameof(typeof(b.second.method))
     println(io, "Chain($(T1) → $(T2))")
 end
 
-function solve_problem(m::Chain, f, D::Int, run_length::Int)
-    rl1 = round(Int, m.p * run_length)
+function solve_problem(m::Chain, f, D::Int, run_length::Int) 
+    rl1 = round(Int, m.p*run_length)
     rl2 = run_length - rl1
-
+    
     sol = solve_problem(m.first, f, D, rl1)
     xinit = sol.u
-    sol = solve_problem(m.second, f, D, rl2; u0 = xinit)
+    sol = solve_problem(m.second, f, D, rl2; u0=xinit)
 end
 
-function solve_problem(optimizer::BenchmarkSetup, f, D::Int, run_length::Int; u0 = pinit_static(Val(D)))
+function solve_problem(optimizer::BenchmarkSetup, f, D::Int, run_length::Int; u0 = pinit(D))
     method = optimizer.method
 
-    optf = OptimizationFunction((u, _) -> f(u), AutoForwardDiff())
-    if optimizer.isboxed
-        prob = OptimizationProblem(optf, u0, lb = SVector{D, Float32}(fill(-5.5f0, D)), ub = SVector{D, Float32}(fill(5.5f0, D)))
+    optf = OptimizationFunction((u,_)->f(u), AutoForwardDiff())
+    if optimizer.isboxed 
+        prob = OptimizationProblem(optf, u0, lb = fill(-5.5, D), ub = fill(5.5, D))
     else
         prob = OptimizationProblem(optf, u0)
     end
@@ -100,13 +100,14 @@ function solve_problem(optimizer::BenchmarkSetup, f, D::Int, run_length::Int; u0
 end
 
 function benchmark(
-    optimizer::Union{Chain, BenchmarkSetup}, f::BBOBFunction{F, N, M}, run_length::AbstractVector{Int};
-    Ntrials::Int = 20, Δf::Real = 1e-6, CI_quantile = 0.25, verbose = true
-) where {F, N, M}
+    optimizer::Union{Chain,BenchmarkSetup}, f::BBOBFunction{F, N, M}, run_length::AbstractVector{Int}; 
+    Ntrials::Int = 20, Δf::Real = 1e-6, CI_quantile=0.25, verbose=true
+    ) where {F, N, M}
+
     verbose && @info("$(string(optimizer))\t $f")
 
     t_alloc = (T) -> zeros(T, Ntrials, length(run_length))
-
+        
     reached_minium = t_alloc(Bool)
     distance_to_xopt = t_alloc(Float64)
     fmin = t_alloc(Float64)
@@ -114,66 +115,69 @@ function benchmark(
 
     f_opt = f.f_opt
     x_opt = f.x_opt
-
+    
     elapsed = 0.0
     for j in 1:length(run_length)
         for i in 1:Ntrials
             try
                 fcounter = FunctionCallsCounter(f)
                 elapsed += @elapsed sol = solve_problem(optimizer, fcounter, N, run_length[j])
-
-                reached_minium[i, j] = sol.objective < Δf + f_opt
-                fmin[i, j] = sol.objective - f_opt
-                distance_to_xopt[i, j] = √sum(abs2.(sol.u - x_opt))
-                callcount[i, j] = fcounter.count
+                
+                reached_minium[i,j] = sol.objective < Δf + f_opt
+                fmin[i,j] = sol.objective - f_opt 
+                distance_to_xopt[i,j] = √sum(abs2.(sol.u - x_opt))
+                callcount[i,j] = fcounter.count
 
             catch err
-                reached_minium[i, j] = false
-                fmin[i, j] = NaN
-                distance_to_xopt[i, j] = NaN
-                callcount[i, j] = 0
+                reached_minium[i,j] = false
+                fmin[i,j] = NaN
+                distance_to_xopt[i,j] = NaN
+                callcount[i,j] = 0
                 @warn(string(optimizer, " failed :", err))
             end
         end
     end
-    elapsed /= Ntrials * length(run_length)
-
-    dr = x -> dropdims(x, dims = 1)
-    success_rate = sum(reached_minium, dims = 1) / Ntrials |> dr
+    elapsed /= Ntrials*length(run_length)
+    
+    dr = x->dropdims(x, dims=1)
+    success_rate = sum(reached_minium, dims=1)/Ntrials |> dr
 
     success_rate_qlow, success_rate_qhigh = compute_CI(success_rate, Ntrials, CI_quantile)
-
+     
     BenchmarkResults(
         run_length = run_length,
-        success_count = sum(reached_minium, dims = 1) |> dr,
-        success_rate = success_rate,
+        success_count = sum(reached_minium, dims=1) |> dr, 
+        success_rate = success_rate, 
         success_rate_qlow = success_rate_qlow,
         success_rate_qhigh = success_rate_qhigh,
-        distance_to_minimizer = mean(distance_to_xopt, dims = 1) |> dr,
-        minimum = mean(fmin, dims = 1) |> dr,
+        distance_to_minimizer = mean(distance_to_xopt, dims=1) |> dr, 
+        minimum = mean(fmin, dims=1) |> dr, 
         runtime = elapsed,
         Neffective = Ntrials,
-        callcount = mean(callcount, dims = 1) |> dr,
+        callcount = mean(callcount, dims=1) |> dr,
         success_rate_per_function = [success_rate[end]]
     )
 end
 
-benchmark(optimizer, funcs, run_length::AbstractVector{Int};
-    Ntrials::Int = 20, Δf::Real = 1e-6, CI_quantile = 0.25
+
+benchmark(optimizer, funcs, run_length::AbstractVector{Int}; 
+    Ntrials::Int = 20, Δf::Real = 1e-6, CI_quantile=0.25
 ) = benchmark(
     BenchmarkSetup(optimizer), funcs, run_length; Ntrials, Δf, CI_quantile
 )
 
+#
 function benchmark(
-    optimizer::Union{Chain, BenchmarkSetup}, funcs::Vector{<:BBOBFunction}, run_length::AbstractVector{Int};
-    Ntrials::Int = 20, Δf::Real = 1e-6, CI_quantile = 0.25
-)
+    optimizer::Union{Chain,BenchmarkSetup}, funcs::Vector{<:BBOBFunction}, run_length::AbstractVector{Int}; 
+    Ntrials::Int = 20, Δf::Real = 1e-6, CI_quantile=0.25
+    )
+    
     res = [benchmark(optimizer, f, run_length; Ntrials, Δf) for f in funcs]
-    reduce_res(res, field, f = mean) = f(getfield(r, field) for r in res)
-
+    reduce_res(res, field, f=mean) = f(getfield(r, field) for r in res)
+    
     Neff = Ntrials * length(funcs)
     success_rate = reduce_res(res, :success_count, sum) / Neff
-
+    
     success_rate_qlow, success_rate_qhigh = compute_CI(success_rate, Neff, CI_quantile)
 
     BenchmarkResults(

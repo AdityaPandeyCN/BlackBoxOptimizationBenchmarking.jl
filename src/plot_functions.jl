@@ -26,7 +26,7 @@
         cmap := :coolwarm
         alpha := 0.25
         aspectratio := 1
-        title := string(func.f)
+        title := func.name
     
         x, y, z
     end
