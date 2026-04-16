@@ -2,19 +2,37 @@ const maximum_dimension = 100
 
 @inline _safe_sqrt(x) = sqrt(max(x, zero(x)))
 
+# T_osz: ifelse evaluates both branches, so log(0) — which gives -Inf value
+# and Inf partial under AD — must be prevented at the source. max(|xi|, tiny)
+# clamps the argument. At xi=0 the `sign(xi)` factor zeros the result, so the
+# small numerical offset is invisible. On GPU max/log compile to select/log
+# intrinsics, no branch divergence.
 @inline function T_osz(xi::T) where T <: Number
-    xhat = ifelse(xi != zero(T), log(abs(xi)), zero(T))
-    c1 = ifelse(xi > zero(T), T(10), T(5.5))
-    c2 = ifelse(xi > zero(T), T(7.9), T(3.1))
+    abs_xi = max(abs(xi), T(1e-12))
+    xhat   = log(abs_xi)
+    c1     = ifelse(xi > zero(T), T(10), T(5.5))
+    c2     = ifelse(xi > zero(T), T(7.9), T(3.1))
     sign(xi) * exp(xhat + T(0.049) * (sin(c1 * xhat) + sin(c2 * xhat)))
 end
 
 @inline T_osz(x::SVector) = map(T_osz, x)
 
+# T_asy: `xi^(float_exponent)` throws DomainError on CPU when xi < 0 — and
+# ifelse evaluates BOTH branches, so the throw fires even when the false
+# branch would be selected. Fix: compute `abs(xi)^expval` so the base is
+# always ≥ 0 and `^` is well-defined everywhere. For xi > 0 the result is
+# identical to the spec (abs(xi) = xi). For xi ≤ 0 the ifelse selects `xi`
+# directly so the powered value is discarded. AD-safe because any NaN
+# partials in the discarded branch (from sqrt at 0, etc.) are dropped by
+# ifelse's elementwise selection on Duals. GPU-safe because there is no
+# ternary and no CPU-style exception path.
 @inline function T_asy(x::SVector{N, T}, β) where {N, T}
     SVector{N, T}(ntuple(Val(N)) do i
-        xi = x[i]
-        ifelse(xi > zero(T), xi^(one(T) + T(β) * T(i - 1) / T(N - 1) * _safe_sqrt(xi)), xi)
+        xi      = x[i]
+        base    = abs(xi)
+        expval  = one(T) + T(β) * T(i - 1) / T(N - 1) * _safe_sqrt(xi)
+        powered = base^expval
+        ifelse(xi > zero(T), powered, xi)
     end)
 end
 
@@ -41,9 +59,23 @@ struct BBOBFunction{F, N, M}
     R::SMatrix{N, N, Float32, M}
 end
 
+# Preserve input eltype so ForwardDiff Duals flow through unmodified. Float32
+# stored fields are promoted to the input type at the call site. On native
+# Float32 GPU calls, T stays Float32 and every conversion is a compile-time
+# no-op. On CPU AD, T becomes ForwardDiff.Dual and partials are preserved.
+#
+# The previous version did `SVector{N, Float32}(x)` + `Float64(result)`, which
+# silently stripped Dual partials — L-BFGS then got zero gradients and took
+# wild steps, which is what pushed the inputs into regimes where the BBOB
+# transforms overflowed and triggered `sincos(Inf)` downstream.
 function (func::BBOBFunction{F, N, M})(x) where {F, N, M}
-    x_static = SVector{N, Float32}(x)
-    Float64(func.f(x_static, func.x_opt, func.f_opt, func.Q, func.R))
+    T = promote_type(eltype(x), Float32)
+    x_static = SVector{N, T}(x)
+    x_opt_T  = SVector{N, T}(func.x_opt)
+    f_opt_T  = T(func.f_opt)
+    Q_T      = SMatrix{N, N, T}(func.Q)
+    R_T      = SMatrix{N, N, T}(func.R)
+    func.f(x_static, x_opt_T, f_opt_T, Q_T, R_T)
 end
 
 show(io::IO, f::BBOBFunction) = print(io, f.name)
@@ -107,10 +139,11 @@ end
 
 """ Buche-Rastrigin Function """
 @inline function f4(x::SVector{N, T}, x_opt, f_opt, Q, R) where {N, T}
-    z = T_osz(x .- x_opt)
+    z    = T_osz(x .- x_opt)
     base = ellip_weights(Val(N), T, T(0.5))
-    s = ifelse.(SVector{N, T}(ntuple(i -> T(isodd(i)), Val(N))) .> zero(T),
-        T(10) .* base, base)
+    # isodd(i) is compile-time via Val(N); the ternary resolves at compile
+    # time so there is no runtime branch — fully GPU-safe.
+    s = SVector{N, T}(ntuple(i -> isodd(i) ? T(10) * base[i] : base[i], Val(N)))
     z = s .* z
     T(10) * (T(N) - sum(cos.(T(2π) .* z))) + sum(z .^ 2) + T(100) * f_pen(x) + f_opt
 end
@@ -120,9 +153,9 @@ end
 """ Linear Slope """
 @inline function f5(x::SVector{N, T}, x_opt, f_opt, Q, R) where {N, T}
     s_signs = sign.(x_opt)
-    s_base = ellip_weights(Val(N), T, T(1))
-    s = s_signs .* s_base
-    z = ifelse.(x_opt .* x .< T(25), x, x_opt)
+    s_base  = ellip_weights(Val(N), T, T(1))
+    s       = s_signs .* s_base
+    z       = ifelse.(x_opt .* x .< T(25), x, x_opt)
     sum(T(5) .* abs.(s) .- s .* z) + f_opt
 end
 
@@ -139,7 +172,7 @@ end
 
 """ Step Ellipsoidal Function """
 @inline function f7(x::SVector{N, T}, x_opt, f_opt, Q, R) where {N, T}
-    z = Λ_mul(Val(N), T(10), R * (x .- x_opt))
+    z      = Λ_mul(Val(N), T(10), R * (x .- x_opt))
     zhat_1 = z[1]
     z = ifelse.(z .> T(0.5),
         floor.(T(0.5) .+ z),
@@ -204,7 +237,7 @@ end
 
 """ Different Powers Function """
 @inline function f14(x::SVector{N, T}, x_opt, f_opt, Q, R) where {N, T}
-    z = R * (x .- x_opt)
+    z  = R * (x .- x_opt)
     pw = SVector{N, T}(ntuple(i -> abs(z[i])^(T(2) + T(4) * T(i - 1) / T(N - 1)), Val(N)))
     _safe_sqrt(sum(pw)) + f_opt
 end
@@ -221,7 +254,7 @@ end
 
 """ Weierstrass Function """
 @inline function f16(x::SVector{N, T}, x_opt, f_opt, Q, R) where {N, T}
-    z = R * Λ_mul(Val(N), T(1 / 100), Q * T_osz(R * (x .- x_opt)))
+    z  = R * Λ_mul(Val(N), T(1 / 100), Q * T_osz(R * (x .- x_opt)))
     f0 = zero(T)
     for k in 0:11
         f0 += T(1) / T(2)^k * cos(T(2π) * T(3)^k * T(0.5))
@@ -269,17 +302,15 @@ end
 
 """ Schwefel Function """
 @inline function f20(x::SVector{N, T}, x_opt, f_opt, Q, R) where {N, T}
-    one_pm = sign.(x_opt)
-    x_scaled = T(2) .* one_pm .* x
+    one_pm    = sign.(x_opt)
+    x_scaled  = T(2) .* one_pm .* x
     abs_x_opt = abs.(x_opt)
 
-    x_prev = SVector{N, T}(ntuple(i -> ifelse(i == 1, zero(T), x_scaled[max(1, i - 1)]), Val(N)))
-    abs_prev = SVector{N, T}(ntuple(i -> ifelse(i == 1, zero(T), abs_x_opt[max(1, i - 1)]), Val(N)))
-    z = ifelse.(
-        SVector{N, T}(ntuple(i -> T(i == 1), Val(N))) .> zero(T),
-        x_scaled,
-        x_scaled .+ T(0.25) .* (x_prev .- T(2) .* abs_prev)
-    )
+    # i is compile-time via Val(N); the ternary inside ntuple resolves at
+    # compile time — no runtime branch, GPU-safe.
+    z = SVector{N, T}(ntuple(Val(N)) do i
+        i == 1 ? x_scaled[i] : x_scaled[i] + T(0.25) * (x_scaled[i - 1] - T(2) * abs_x_opt[i - 1])
+    end)
 
     z_shifted = z .- T(2) .* abs_x_opt
     z = T(100) .* (Λ_mul(Val(N), T(10), z_shifted) .+ T(2) .* abs_x_opt)
@@ -316,8 +347,8 @@ function bbob_suite(::Val{N}; seed = 42) where N
             x_opt = make_x_opt(Val(N), seed + i)
         end
         f_opt = make_f_opt(seed + 100 + i)
-        Qmat = make_rotation(Val(N), seed + 200 + i)
-        Rmat = make_rotation(Val(N), seed + 300 + i)
+        Qmat  = make_rotation(Val(N), seed + 200 + i)
+        Rmat  = make_rotation(Val(N), seed + 300 + i)
         push!(suite, BBOBFunction(BBOB_NAMES[i], fn, x_opt, f_opt, Qmat, Rmat))
     end
     suite
